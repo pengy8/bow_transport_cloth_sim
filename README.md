@@ -1,4 +1,4 @@
-# Project Title
+# bow_transport_cloth_sim
 
 Baxter-on-wheel transports a deformable cloth with voice command.
 
@@ -14,7 +14,7 @@ or
 ```main_mouse_orientation_control.py```
 
 
-### Prerequisites
+## Prerequisites
 
 MATLAB libraries:
 ```https://github.com/rpiRobotics/general-robotics-toolbox```
@@ -25,7 +25,7 @@ Python libraries:
 
 
 
-## Reference
+### Reference
 
 The Cloth simulation is based on the code from http://www.pygame.org/project-Realtime+CPU+Cloth-1235-.html
 
