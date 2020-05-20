@@ -10,9 +10,8 @@ BOWwCloth.m
 ```
 Run in Python 2.7 for main algorithms: 
 ```
-main_voice_control.py```
-or 
-```main_mouse_orientation_control.py
+main_voice_control.py
+main_mouse_orientation_control.py
 ```
 
 
@@ -20,8 +19,8 @@ or
 
 MATLAB libraries:
 ```
-https://github.com/rpiRobotics/general-robotics-toolbox```
-```https://github.com/rpiRobotics/matlab-rigid-body-viz
+https://github.com/rpiRobotics/general-robotics-toolbox
+https://github.com/rpiRobotics/matlab-rigid-body-viz
 ```
 
 Python libraries:
