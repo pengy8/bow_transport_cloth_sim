@@ -12,12 +12,13 @@ pygame.font.init()
 import numpy as np
 import timeit
 import scipy.io as sio
-from QuadProg_BOW import QP_bow
+# from QuadProg_BOW import QP_bow
+from QuadProg_BOW_wHead import QP_bow_head
 from baxter_info import *
+from scipy.linalg import logm
 
 screen_size = [800,600]
 multisample = 16
-#icon = pygame.Surface((1,1)); icon.set_alpha(0); pygame.display.set_icon(icon)
 pygame.display.set_caption("Cloth Demo")
 if multisample:
     pygame.display.gl_set_attribute(GL_MULTISAMPLEBUFFERS,1)
@@ -86,12 +87,6 @@ def recognize_speech_from_mic(recognizer, microphone):
 
     return response
 
-#glEnable(GL_BLEND)
-#glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA)
-
-#glEnable(GL_TEXTURE_2D)
-#glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_MODULATE)
-#glTexEnvi(GL_POINT_SPRITE,GL_COORD_REPLACE,GL_TRUE)
 
 glHint(GL_PERSPECTIVE_CORRECTION_HINT,GL_NICEST)
 glEnable(GL_DEPTH_TEST)
@@ -141,13 +136,13 @@ class Particle(object):
             
         if self.pos[0]> Table_lower_bound[0] and self.pos[0] < Table_upper_bound[0]:
             if self.pos[2]> Table_lower_bound[2] and self.pos[2] < Table_upper_bound[2]:
-                if self.pos[1] < Table_upper_bound[1]:
-                    self.pos[1] = Table_upper_bound[1]
-#        else: 
-#            for i in [0,1,2]:
-#                self.pos[i] = self.last_pos[i]
-#            if self.pos[i] < 0.0: self.pos[i] = 0.0
-#            elif self.pos[i] > 1.0: self.pos[i] = 1.0
+                
+                pos_MATLAB = np.dot(R_K2B,(np.array(self.pos)-np.array([0.,1.0,0.]))*cloth_scale)+cloth_offset
+                Ztmp = -0.6*(pos_MATLAB[0]-2)**2 + 0.3*(pos_MATLAB[1]-1)**2 + 0.87
+                Z_sim = (Ztmp-cloth_offset[2])/cloth_scale + 1.0
+                if self.pos[1] < Z_sim:#Table_upper_bound[1]:
+                    self.pos[1] = Z_sim#Table_upper_bound[1]
+
     def draw(self):
         glVertex3fv(self.pos)
         
@@ -168,7 +163,7 @@ class Edge(object):
 
         if   length > self.upper_length:
             target_length = self.upper_length
-            strength = 1
+            strength = 0.5
         elif length < self.rest_length:
             target_length = self.lower_length
             strength = 0
@@ -177,7 +172,6 @@ class Edge(object):
             strength = (length - self.rest_length) / ( 10*self.rest_length)
 
         
-#        print ('Test:', self.rest_length)
         movement_for_each = strength * (length - target_length) / 0.2#0.5#2.0
         if movement_for_each>0.1:
             movement_for_each = 0.1
@@ -234,7 +228,6 @@ class ClothCPU(object):
         
         self.particles[         0][         1].constrained = True
         self.particles[         0][self.res-2].constrained = True        
-        #self.particles[         0][self.res-1].constrained = True
 
         self.edges = []
         for z1 in range(self.res):
@@ -437,7 +430,7 @@ def run_sr(recognizer, microphone):
     global process
     global vx,vy,vz 
     
-    WORDS = ["stop","forward","backward","left","right","higher","lower","freeze","Tire","laughed","fries","freezing","free"]
+    WORDS = ["stop","forward","backward","left","right","higher","lower","freeze","Tire","laughed","fries","freezing","free", "Ford","letgo", "press", "plus"]
     # ["stop", "start", "pull tight", "relax", "lift", "lower", "grab there", "letgo", "freeze", "follow me", "go", "turn", "tug", "reach"]   
     step = 0.1
     
@@ -468,18 +461,19 @@ def run_sr(recognizer, microphone):
                     vx = 0
                     vy = 0
                     vz = 0
-                    if process == 1:
+                    if process == 1 or process == 13:
                         vz += 3*step
                     elif process == 2:
                         vz -= 3*step
                     elif process == 3 or process == 9:
-                        vx += step
+                        vx += 2*step
                     elif process == 4:
-                        vx -= step   
+                        vx -= 2*step   
                     elif process == 5 or process == 8:
                         vy += step
                     elif process == 6:
                         vy -= step
+                        
                          
         print ("Process:", process)
         
@@ -543,9 +537,10 @@ def main():
     ez = np.array([0,0,1])
 #    dt = 0.05
     dq_pre = np.zeros([17,1]) 
-    Lambda = 0      # Lambda: weighting on dual arm motion
-    Epsilon1 = 1    # Epsilon1: alpha close to 1
-    Epsilon2 = 0.5   # Epsilon2: q close to previous         
+    Epsilon1 = 1     # Epsilon1: alpha close to 1
+    Epsilon2 = 0     # Epsilon2: weighting on dual arm motion
+    Epsilon3 = 0.5   # Epsilon3: q close to previous      
+    Epsilon4 = 10    # Epsilon4: BOW facing the human head       
 
 
     human_L = np.array(cloth.particles[ point_n-1][         0].pos)
@@ -557,10 +552,13 @@ def main():
     Xk = np.vstack([Z, np.zeros([6,1])]).reshape([12,1])    
     Xk_prev = Xk
 
-       
-          
-    while True:
-    #for i in range(1000):
+    human_head0 = (human_L + human_R)*0.5-(np.array(cloth.particles[ 0][         0].pos)+np.array(cloth.particles[ 0][ point_n-1].pos))*0.5
+    human_head0 = np.dot(R_K2B,human_head0)
+    human_head0 = human_head0/np.linalg.norm(human_head0)       
+    v_current = np.array([0,0,0])   
+    
+    while process != 0:
+        
         tic = timeit.default_timer()
         if not get_input(): break
 
@@ -569,6 +567,7 @@ def main():
             for y in range(point_n):
                     pos.append(np.array(cloth.particles[x][y].pos))     
 
+        
         #==============================Control=================================
         VT = np.zeros([12,1])            
         q = np.hstack([qL,qR,np.array([0,0,0])]).reshape([17,1])
@@ -576,94 +575,173 @@ def main():
         JL = robotjacobian(Bdef.left.H, Bdef.left.P, Bdef.left.joint_type, qL)
         JR = robotjacobian(Bdef.right.H, Bdef.right.P, Bdef.right.joint_type, qR)
         
-        pp_L,RR = fwdkin_alljoints(qL, Bdef.left.joint_type, Bdef.left.H, Bdef.left.P, 7)
+        pp_L,RR_L = fwdkin_alljoints(qL, Bdef.left.joint_type, Bdef.left.H, Bdef.left.P, 7)
         p_BTL = pp_L[:, -1]
-        pp_R,RR = fwdkin_alljoints(qR, Bdef.right.joint_type, Bdef.right.H, Bdef.right.P, 7)
+        pp_R,RR_R = fwdkin_alljoints(qR, Bdef.right.joint_type, Bdef.right.H, Bdef.right.P, 7)
         p_BTR = pp_R[:, -1]
         JT = getJT(JL,JR,p_BTL,p_BTR)          
-        
-   
-        ### Force Control
-        wrL = np.dot(R_K2B,np.array(cloth.particles[         0][         0].force))
-        wrR = np.dot(R_K2B,np.array(cloth.particles[         0][ point_n-1].force))
-        h_LR = p_BTR-p_BTL
-        h_LR_norm = h_LR/np.linalg.norm(h_LR)
-        h_LRv = np.cross(h_LR_norm,ez)
-#        print ('Force: ',np.dot(h_LR_norm,wrL),np.dot(h_LRv,wrL))
-        if np.dot(h_LR_norm,wrL)>GraspForce[4] and np.dot(h_LRv,wrL)<GraspForce[3]:
-            vL_force = -K_com*(np.dot(h_LR_norm,wrL)-GraspForce[4])*h_LR_norm-K_com*(np.dot(h_LRv,wrL)-GraspForce[3])*h_LRv
-            VT[3:6] += vL_force.reshape([3,1])
-        if np.dot(h_LR_norm,wrR)<GraspForce[10] and np.dot(h_LRv,wrR)<GraspForce[9]:
-            vR_force = -K_com*(np.dot(h_LR_norm,wrR)-GraspForce[10])*h_LR_norm-K_com*(np.dot(h_LRv,wrR)-GraspForce[9])*h_LRv
-            VT[9:12] += vR_force.reshape([3,1])
-            
         Closest_Pt_L , Closest_Pt_env_L, Closest_Pt_R , Closest_Pt_env_R = collision_check(pp_L,pp_R)
-        human_L = np.array(cloth.particles[ point_n-1][         0].pos)
-        human_R = np.array(cloth.particles[ point_n-1][ point_n-1].pos)
         
-        p_L = np.dot(R_K2B,human_L)
-        p_R = np.dot(R_K2B,human_R)
         
-        ## Kalman Iteration
-        Z = np.vstack([p_L,p_R]).reshape([6,1])        
-        Xk = np.vstack([Z, np.zeros([6,1])]).reshape([12,1])    
-        Vk = Xk - Xk_prev
-        Xk_prev = Xk
-                               
-        # For the next iteration                                                                 
-        p_LR = (Xk[3:6,:]-Xk[0:3,:]).reshape([3,])
-        p_LR = p_LR/np.linalg.norm(p_LR)
-        vc = 1*(Vk[3:6,:]+Vk[0:3,:]).reshape([3,1])
-        wc = 10*(np.cross(p_LR_prev,p_LR)*np.arccos(np.clip(np.dot(p_LR_prev,p_LR),-1,1))).reshape([3,1])                        
+        if process < 14:
+            
+            ### Force Control
+            wrL = np.dot(R_K2B,np.array(cloth.particles[         0][         0].force))
+            wrR = np.dot(R_K2B,np.array(cloth.particles[         0][ point_n-1].force))
+            h_LR = p_BTR-p_BTL
+            h_LR_norm = h_LR/np.linalg.norm(h_LR)
+            h_LRv = np.cross(h_LR_norm,ez)
+            if np.dot(h_LR_norm,wrL)>GraspForce[4] and np.dot(h_LRv,wrL)<GraspForce[3]:
+                vL_force = -K_com*(np.dot(h_LR_norm,wrL)-GraspForce[4])*h_LR_norm-K_com*(np.dot(h_LRv,wrL)-GraspForce[3])*h_LRv
+                VT[3:6] += vL_force.reshape([3,1])
+            if np.dot(h_LR_norm,wrR)<GraspForce[10] and np.dot(h_LRv,wrR)<GraspForce[9]:
+                vR_force = -K_com*(np.dot(h_LR_norm,wrR)-GraspForce[10])*h_LR_norm-K_com*(np.dot(h_LRv,wrR)-GraspForce[9])*h_LRv
+                VT[9:12] += vR_force.reshape([3,1])
+                
+            
+            human_L = np.array(cloth.particles[ point_n-1][         0].pos)
+            human_R = np.array(cloth.particles[ point_n-1][ point_n-1].pos)
+            
+            p_L = np.dot(R_K2B,human_L)
+            p_R = np.dot(R_K2B,human_R)
+            
+            ## Kalman Iteration
+            Z = np.vstack([p_L,p_R]).reshape([6,1])        
+            Xk = np.vstack([Z, np.zeros([6,1])]).reshape([12,1])    
+            Vk = Xk - Xk_prev
+            Xk_prev = Xk
+                                   
+            # For the next iteration                                                                 
+            p_LR = (Xk[3:6,:]-Xk[0:3,:]).reshape([3,])
+            p_LR = p_LR/np.linalg.norm(p_LR)
+            vc = 1*(Vk[3:6,:]+Vk[0:3,:]).reshape([3,1])
+            wc = 10*(np.cross(p_LR_prev,p_LR)*np.arccos(np.clip(np.dot(p_LR_prev,p_LR),-1,1))).reshape([3,1])                        
+            
+            Vc = np.vstack([wc,vc])
+            
+            AL = np.vstack([np.hstack([np.eye(3),np.zeros([3,3])]),np.hstack([-hat(-h_LR*0.5),np.eye(3)])])
+            AR = np.vstack([np.hstack([np.eye(3),np.zeros([3,3])]),np.hstack([-hat(h_LR*0.5),np.eye(3)])])
+            
+            VT[0:6] += 10*np.dot(AL,Vc)
+            VT[6:12] += 10*np.dot(AR,Vc)
+            
+            p_LR_prev = p_LR
+            if not any(np.isnan(VT)):
+                
+                human_headc = (human_L + human_R)*0.5-(np.array(cloth.particles[ 0][         0].pos)+np.array(cloth.particles[ 0][ point_n-1].pos))*0.5
+                human_headc = np.dot(R_K2B,human_headc)
+                human_headc = human_headc/np.linalg.norm(human_headc)
+                
+                v_head = np.cross(human_headc,human_head0)
+                theta_head = np.arccos(np.dot(human_headc,human_head0))
+                Ktheta_h = -np.sign(v_head.dot(ez))*theta_head*10*(theta_head>10e-5)  
+                # print theta_head, human_head0,  human_headc          
+                dq_sln = QP_bow_head(JT,VT,Epsilon1,Epsilon2,q,Epsilon3, Epsilon4, Ktheta_h, dq_pre, Closest_Pt_L , Closest_Pt_env_L, Closest_Pt_R , Closest_Pt_env_R)
+                human_head0 = human_headc
+                dq_sln=dq_sln*(abs(dq_sln)>0.01)
+                dq_pre = dq_sln[0:17].reshape([17,1])
+                dqL = dq_sln[0:7]
+                dqR = dq_sln[7:14]
+
+                dqB = np.array([dq_sln[15],dq_sln[16],dq_sln[14]])#dq_sln[14:17]                
+    
+                qL += dqL*dt
+                qR += dqR*dt                
+                qB += dqB*dt                      
+    
+                dV=np.dot(JT,dq_sln[0:17])
+    
+                pp_L,RR = fwdkin_alljoints(np.hstack([qB,qL,0.05]), bow_joint_type_left, bow_H_left, bow_P_left, 11)
+                p_BTL_bow = pp_L[:, -1]    
+                pp_R,RR = fwdkin_alljoints(np.hstack([qB,qR,0.05]), bow_joint_type_right, bow_H_right, bow_P_right, 11)
+                p_BTR_bow = pp_R[:, -1] 
         
-        Vc = np.vstack([wc,vc])
+                cloth.particles[         0][         0].pos = np.dot(R_K2B_inv,(p_BTR_bow-cloth_offset))/cloth_scale+np.array([0.,1.0,0.]) 
+                cloth.particles[         0][ point_n-1].pos = np.dot(R_K2B_inv,(p_BTL_bow-cloth_offset))/cloth_scale+np.array([0.,1.0,0.])         
+                cloth.particles[         0][         1].pos = np.dot(R_K2B_inv,(p_BTR_bow-cloth_offset))/cloth_scale+np.array([0.1,1.0,0.]) 
+                cloth.particles[         0][ point_n-2].pos = np.dot(R_K2B_inv,(p_BTL_bow-cloth_offset))/cloth_scale+np.array([-0.1,1.0,0.])
         
-        AL = np.vstack([np.hstack([np.eye(3),np.zeros([3,3])]),np.hstack([-hat(-h_LR*0.5),np.eye(3)])])
-        AR = np.vstack([np.hstack([np.eye(3),np.zeros([3,3])]),np.hstack([-hat(h_LR*0.5),np.eye(3)])])
-        
-        VT[0:6] += 10*np.dot(AL,Vc)
-        VT[6:12] += 10*np.dot(AR,Vc)
-        
-        p_LR_prev = p_LR
-        # print ('VT[0:6]: ',Vc)
-#        print ('Vk: ',Vk)
-#        print ('human_L: ',human_L)
-#        print ('wc: ',wc)
-        if not any(np.isnan(VT)):
-#            if all(Vc) ==0:
-#                dq_sln = np.zeros([18,])
-#            else:
-            dq_sln = QP_bow(JT,VT,Lambda,Epsilon1,q,Epsilon2,dq_pre, Closest_Pt_L , Closest_Pt_env_L, Closest_Pt_R , Closest_Pt_env_R)    
-#            VT = np.zeros([12,1])
-#            VT[9] = 0.2
-#            VT[3] = 0.2
-#            dq_sln = np.dot(np.linalg.pinv(JT),VT).reshape([17,])
-#            print ('dq_sln: ',dq_sln)
+        elif process == 14  :
+            qL = np.array([0.3804,0.0579,-1.6341,1.,0.5,0.2,0])#q0L#np.array([0.3804,0.0579,-1.6341,1.2805,0.1603,1.3948,0.0667])#q0L# 0.1*(q0L-qL)+qL
+            qR = qL*[-1,1,-1,1,-1,1,-1]#q0R# 0.1*(q0R-qR)+qR
+            for i in range(2,point_n-1):
+                for j in range(2,point_n-1):
+                    cloth.particles[i ][        j].constrained = True 
+            
+            cloth.particles[         0][         0].constrained = False
+            cloth.particles[point_n-1 ][         0].constrained = False
+            cloth.particles[         0][point_n-1].constrained = False
+            cloth.particles[point_n-1 ][point_n-1].constrained = False   
+            
+            cloth.particles[         0][         1].constrained = False
+            cloth.particles[         0][point_n-2].constrained = False 
+            
+
+            
+
+            
+        else:
+            pp_L,RR_L = fwdkin_alljoints(np.hstack([qB,qL,0.05]), bow_joint_type_left, bow_H_left, bow_P_left, 11)
+            p_BTL_bow = pp_L[:, -1]    
+            pp_R,RR_R = fwdkin_alljoints(np.hstack([qB,qR,0.05]), bow_joint_type_right, bow_H_right, bow_P_right, 11)
+            p_BTR_bow = pp_R[:, -1] 
+            
+            p_target = np.array([1.6,0.65,0.8107])#np.array([1.75,0.7,0.8595])-np.array([1,1,0])
+            v_target = np.array([-1.2*(p_target[0]-2),0.6*(p_target[1]-1),-1]).reshape([3,])
+            v_target = v_target/np.linalg.norm(v_target)
+            v_current = (pp_R[:, -1]-pp_R[:, -2]).reshape([3,])#np.dot(np.array([1,0,0]),RR_R[:,:,-1]).reshape([3,])
+            v_current = v_current/np.linalg.norm(v_current)
+            
+            print ("RR: ",RR_R[:,:,-1])
+            
+            k = np.cross(v_current,v_target)
+            theta = np.sign(np.dot(ez,k))*-2*np.arctan2(np.linalg.norm(v_current-v_target), np.linalg.norm(v_current+v_target))
+            VT[6:9] = 0.1*k.reshape([3,1])*theta
+            VT[9:12] = 0.2*(p_target-p_BTR_bow).reshape([3,1])
+            
+            print ("v1: ",np.dot(RR_R[:,:,-1],np.array([1,0,0])).reshape([3,]),
+                   "v2: ",(pp_R[:, -1]-pp_R[:, -2]).reshape([3,]),"dist: ",(p_target-p_BTR_bow),"Ang: ",k.reshape([3,1])*theta)
+            
+            Lambda = 50     # Lambda: weighting on dual arm motion
+            Epsilon1 = 1    # Epsilon1: alpha close to 1
+            Epsilon2 = 50   # Epsilon2: q close to previous  
+
+            Epsilon1 = 1     # Epsilon1: alpha close to 1
+            Epsilon2 = 50     # Epsilon2: weighting on dual arm motion
+            Epsilon3 = 50   # Epsilon3: q close to previous      
+            Epsilon4 = 1    # Epsilon4: BOW facing the human head                  
+            # dq_sln = QP_bow(JT,VT,Lambda,Epsilon1,q,Epsilon2,dq_pre, Closest_Pt_L , Closest_Pt_env_L, Closest_Pt_R , Closest_Pt_env_R)    
+            # dq_sln=dq_sln*(abs(dq_sln)>0.01)
+            # dq_pre = dq_sln[0:17].reshape([17,1])
+            # dqL = dq_sln[0:7]
+            # dqR = dq_sln[7:14]
+            # qL += dqL*dt
+            # qR += dqR*dt
+            # dqB = np.array([dq_sln[15],dq_sln[16],dq_sln[14]])#dq_sln[14:17]
+            # qB += dqB*dt       
+
+            human_headc = (human_L + human_R)*0.5-(np.array(cloth.particles[ 0][         0].pos)+np.array(cloth.particles[ 0][ point_n-1].pos))*0.5
+            human_headc = np.dot(R_K2B,human_headc)
+            human_headc = human_headc/np.linalg.norm(human_headc)
+            
+            v_head = np.cross(human_headc,human_head0)
+            theta_head = np.arccos(np.dot(human_headc,human_head0))
+            Ktheta_h = -np.sign(v_head.dot(ez))*theta_head*10*(theta_head>10e-5)  
+            dq_sln = QP_bow_head(JT,VT,Epsilon1,Epsilon2,q,Epsilon3, Epsilon4, Ktheta_h, dq_pre, Closest_Pt_L , Closest_Pt_env_L, Closest_Pt_R , Closest_Pt_env_R)
+            human_head0 = human_headc
             dq_sln=dq_sln*(abs(dq_sln)>0.01)
             dq_pre = dq_sln[0:17].reshape([17,1])
             dqL = dq_sln[0:7]
             dqR = dq_sln[7:14]
+            dqB = np.array([dq_sln[15],dq_sln[16],dq_sln[14]])#dq_sln[14:17]                
             qL += dqL*dt
-            qR += dqR*dt
-
-            dqB = np.array([dq_sln[15],dq_sln[16],dq_sln[14]])#dq_sln[14:17]
+            qR += dqR*dt                
             qB += dqB*dt                      
-
-
             dV=np.dot(JT,dq_sln[0:17])
 
-
-            pp_L,RR = fwdkin_alljoints(np.hstack([qB,qL,0.05]), bow_joint_type_left, bow_H_left, bow_P_left, 11)
-            p_BTL_bow = pp_L[:, -1]    
-            pp_R,RR = fwdkin_alljoints(np.hstack([qB,qR,0.05]), bow_joint_type_right, bow_H_right, bow_P_right, 11)
-            p_BTR_bow = pp_R[:, -1] 
-    
-            cloth.particles[         0][         0].pos = np.dot(R_K2B_inv,(p_BTR_bow-cloth_offset))/cloth_scale+np.array([0.,1.0,0.]) 
-            cloth.particles[         0][ point_n-1].pos = np.dot(R_K2B_inv,(p_BTL_bow-cloth_offset))/cloth_scale+np.array([0.,1.0,0.])         
-            cloth.particles[         0][         1].pos = np.dot(R_K2B_inv,(p_BTR_bow-cloth_offset))/cloth_scale+np.array([0.1,1.0,0.]) 
-            cloth.particles[         0][ point_n-2].pos = np.dot(R_K2B_inv,(p_BTL_bow-cloth_offset))/cloth_scale+np.array([-0.1,1.0,0.])
+                
         pos = np.array(pos)          
-        sio.savemat('pos.mat', {'pos':pos,'qL':qL,'qR':qR,'qB':qB})
+        sio.savemat('pos.mat', {'pos':pos,'qL':qL,'qR':qR,'qB':qB,'v_current': v_current})
         draw()
         clock.tick(target_fps)
         # t_all.append(timeit.default_timer()-tic)

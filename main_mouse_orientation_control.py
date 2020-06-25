@@ -12,39 +12,38 @@ pygame.font.init()
 import numpy as np
 import timeit
 import scipy.io as sio
-from QuadProg_BOW import QP_bow
+from QuadProg_BOW_wHead import QP_bow_head
 from baxter_info import *
 from general_robotics_toolbox import rot
-#from tf.transformations import quaternion_matrix
 
 screen_size = [800,600]
 multisample = 16
-#icon = pygame.Surface((1,1)); icon.set_alpha(0); pygame.display.set_icon(icon)
 pygame.display.set_caption("Cloth Demo")
+
 if multisample:
     pygame.display.gl_set_attribute(GL_MULTISAMPLEBUFFERS,1)
     pygame.display.gl_set_attribute(GL_MULTISAMPLESAMPLES,multisample)
 pygame.display.set_mode(screen_size,OPENGL|DOUBLEBUF)
 
-
-
-
-#glEnable(GL_BLEND)
-#glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA)
-
-#glEnable(GL_TEXTURE_2D)
-#glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_MODULATE)
-#glTexEnvi(GL_POINT_SPRITE,GL_COORD_REPLACE,GL_TRUE)
-
 glHint(GL_PERSPECTIVE_CORRECTION_HINT,GL_NICEST)
 glEnable(GL_DEPTH_TEST)
-
 glPointSize(4)
 
 def subtract(vec1,vec2):
     return [vec1[i]-vec2[i] for i in [0,1,2]]
 def get_length(vec):
     return sum([vec[i]*vec[i] for i in [0,1,2]])**0.5
+
+cloth_offset = [ 0.9213,-0.4592, 1.2194] # =p_OR0
+cloth_scale = 0.9186
+R_K2B = np.array([[0.0,0.0,1.0],[1.0,0.0,0.0],[0.0,1.0,0.0]])
+R_K2B_inv = np.array([[0., 1., 0.],[0., 0., 1.],[1., 0., 0.]])
+
+Table_O = np.dot(R_K2B_inv,(np.array([2,1,0])-cloth_offset))/cloth_scale+np.array([0.,1.0,0.]) 
+Table_dim = np.dot(R_K2B_inv,(np.array([0.5,0.5,0.79])))/cloth_scale#np.array([0.5,0.79,0.5])/cloth_scale
+Table_lower_bound = [Table_O[0]-Table_dim[0],Table_O[1],Table_O[2]-Table_dim[2]]
+Table_upper_bound = [Table_O[0]+Table_dim[0],Table_O[1]+Table_dim[1],Table_O[2]+Table_dim[2]]
+
 
 class Particle(object):
     def __init__(self,pos):
@@ -60,7 +59,6 @@ class Particle(object):
     def move(self,dt):
         #Don't move constrained particles
       
-        
         if self.constrained: return
         #Move
         if 1:#not self.streched:
@@ -69,11 +67,17 @@ class Particle(object):
                 temp = 2*self.pos[i] - self.last_pos[i] + self.accel[i]*dt*dt
                 self.last_pos[i] = self.pos[i]
                 self.pos[i] = temp
-#        else: 
-#            for i in [0,1,2]:
-#                self.pos[i] = self.last_pos[i]
-#            if self.pos[i] < 0.0: self.pos[i] = 0.0
-#            elif self.pos[i] > 1.0: self.pos[i] = 1.0
+                
+                
+        if self.pos[0]> Table_lower_bound[0] and self.pos[0] < Table_upper_bound[0]:
+            if self.pos[2]> Table_lower_bound[2] and self.pos[2] < Table_upper_bound[2]:
+                
+                pos_MATLAB = np.dot(R_K2B,(np.array(self.pos)-np.array([0.,1.0,0.]))*cloth_scale)+cloth_offset
+                Ztmp = -0.6*(pos_MATLAB[0]-2)**2 + 0.3*(pos_MATLAB[1]-1)**2 + 0.87
+                Z_sim = (Ztmp-cloth_offset[2])/cloth_scale + 1.0
+                if self.pos[1] < Z_sim:#Table_upper_bound[1]:
+                    self.pos[1] = Z_sim#Table_upper_bound[1]
+
     def draw(self):
         glVertex3fv(self.pos)
         
@@ -94,7 +98,7 @@ class Edge(object):
 
         if   length > self.upper_length:
             target_length = self.upper_length
-            strength = 1
+            strength = 0.5
         elif length < self.rest_length:
             target_length = self.lower_length
             strength = 0
@@ -103,7 +107,6 @@ class Edge(object):
             strength = (length - self.rest_length) / ( 10*self.rest_length)
 
         
-#        print ('Test:', self.rest_length)
         movement_for_each = strength * (length - target_length) / 0.2#0.5#2.0
         if movement_for_each>0.1:
             movement_for_each = 0.1
@@ -112,55 +115,15 @@ class Edge(object):
             
         K_d = 0.04
         for i in [0,1,2]:
-#            if not self.p1.constrained: self.p1.pos[i] += movement_for_each*vec[i]
-#            else: self.p1.vel[i] += movement_for_each*vec[i]
-#            if not self.p2.constrained: self.p2.pos[i] -= movement_for_each*vec[i]
-#            else: self.p2.vel[i] -= movement_for_each*vec[i]        
             
             tmp = movement_for_each*vec[i] - K_d*(self.p1.last_vel[i]-self.p2.last_vel[i])
             self.p1.force[i] += tmp
             self.p2.force[i] -= tmp
 
-                
-#            self.p1.vel[i] += self.p1.force[i]
-#            self.p2.vel[i] += self.p2.force[i] 
             
             if not self.p1.constrained: self.p1.pos[i] += tmp
-#            if self.p1.streched: self.p1.pos[i] = self.p1.last_pos[i]
-#            else: self.p1.vel[i] += movement_for_each*vec[i]
             if not self.p2.constrained: self.p2.pos[i] -= tmp
-#            if self.p2.streched: self.p2.pos[i] = self.p2.last_pos[i]
-#            else: self.p2.vel[i] -= movement_for_each*vec[i]
 
-
-        
-#        vec = [self.p2.pos[i]-self.p1.pos[i] for i in [0,1,2]]
-#        length = get_length(vec)
-#        
-#        
-#        if   length < self.rest_length:
-#            strength = 0
-#            
-#        else:
-#            strength = 0.2*(length - self.rest_length) * (length - self.rest_length) / 0.5
-#        
-#        if strength>0.1: strength=0.1
-#        
-#        K_d = 0.05
-##        print  ("strength",K_d*(self.p1.last_vel[2]-self.p2.last_vel[2]))
-#        for i in [0,1,2]:
-#
-#            
-#            self.p1.force[i] += strength*vec[i]/length - K_d*(self.p1.last_vel[i]-self.p2.last_vel[i])
-#            self.p2.force[i] -= strength*vec[i]/length - K_d*(self.p1.last_vel[i]-self.p2.last_vel[i])
-#
-##            self.p1.vel[i] += self.p1.force[i]
-##            self.p2.vel[i] += self.p2.force[i] 
-#            
-#            if not self.p1.constrained: self.p1.pos[i] += self.p1.force[i]*dt
-##            else: self.p1.vel[i] += movement_for_each*vec[i]
-#            if not self.p2.constrained: self.p2.pos[i] += self.p2.force[i]*dt
-##            else: self.p2.vel[i] -= movement_for_each*vec[i]
 
             
             
@@ -195,11 +158,14 @@ class ClothCPU(object):
                     float(z)/float(self.res-1)
                 ]))
             self.particles.append(row)
+            
         self.particles[         0][         0].constrained = True
         self.particles[self.res-1][         0].constrained = True
         self.particles[         0][self.res-1].constrained = True
-        self.particles[self.res-1][self.res-1].constrained = True        
-        #self.particles[         0][self.res-1].constrained = True
+        self.particles[self.res-1][self.res-1].constrained = True   
+        
+        self.particles[         0][         1].constrained = True
+        self.particles[         0][self.res-2].constrained = True  
 
         self.edges = []
         for z1 in range(self.res):
@@ -242,28 +208,15 @@ class ClothCPU(object):
                 
     def update_mouse(self,dt,mouse_rel):
 
-                
-#        self.particles[         0][         0].constrained = False
-#        self.particles[point_n-1][         0].constrained = False    
 
-
-        vtmp = 0.5*np.array(self.particles[ point_n-1][         0].pos)-0.5*np.array(self.particles[ point_n-1][ point_n-1].pos)
-        center = 0.5*np.array(self.particles[ point_n-1][         0].pos)+0.5*np.array(self.particles[ point_n-1][ point_n-1].pos)
-        print ("Vtmp: ",vtmp)
-        # vtmp = np.array([0.,0.,1.])#vtmp/np.linalg.norm(vtmp)
-        vtmp1 = np.dot(rot([0,0,1], mouse_rel[0]/100.0),np.dot(rot([0,1,0], -mouse_rel[1]/100.0),np.dot(rot([1,0,0], 0.01*mouse_rel[2]),vtmp)))
-        vtmp2 = np.dot(rot([0,0,1], mouse_rel[0]/100.0),np.dot(rot([0,1,0], -mouse_rel[1]/100.0),np.dot(rot([1,0,0], 0.01*mouse_rel[2]),-vtmp)))
-        # vtmp1 = vtmp1 - vtmp
-        # vtmp2 = vtmp2 + vtmp
-        # self.particles[ point_n-1][         0].accel = [mouse_rel[0]/10.0, -mouse_rel[1]/10.0, 2*mouse_rel[2]]
-        # self.particles[ point_n-1][ point_n-1].accel = [mouse_rel[0]/10.0, -mouse_rel[1]/10.0, 2*mouse_rel[2]]  
-        # self.particles[ point_n-1][         0].accel = [vtmp1[0], vtmp1[1], vtmp1[2]]
-        # self.particles[ point_n-1][ point_n-1].accel = [vtmp2[0], vtmp2[1], vtmp2[2]]        
+        self.particles[ point_n-1][         0].accel = [mouse_rel[0]/10.0, -mouse_rel[1]/10.0, 2*mouse_rel[2]]
+        self.particles[ point_n-1][ point_n-1].accel = [mouse_rel[0]/10.0, -mouse_rel[1]/10.0, 2*mouse_rel[2]]  
+    
         for i in [0,1,2]:
             self.particles[ point_n-1][         0].last_pos[i] = self.particles[ point_n-1][         0].pos[i]
             self.particles[ point_n-1][ point_n-1].last_pos[i] = self.particles[ point_n-1][ point_n-1].pos[i]
-            self.particles[ point_n-1][         0].pos[i] = center[i]+vtmp1[i]#self.particles[ point_n-1][         0].pos[i]+self.particles[ point_n-1][         0].accel[i]*dt
-            self.particles[ point_n-1][ point_n-1].pos[i] = center[i]+vtmp2[i]#self.particles[ point_n-1][ point_n-1].pos[i]+self.particles[ point_n-1][ point_n-1].accel[i]*dt                   
+            self.particles[ point_n-1][         0].pos[i] = self.particles[ point_n-1][         0].pos[i]+self.particles[ point_n-1][         0].accel[i]*dt
+            self.particles[ point_n-1][ point_n-1].pos[i] = self.particles[ point_n-1][ point_n-1].pos[i]+self.particles[ point_n-1][ point_n-1].accel[i]*dt                   
         #Move everything
 
         for row in self.particles:
@@ -322,7 +275,6 @@ def get_input():
             else: scroll_bar=0
             
     if mouse_buttons[0]:
-        print ('mouse_rel:',[mouse_rel[0],mouse_rel[1],scroll_bar])
         cloth.constrain(3)
         cloth.update_mouse(dt,[mouse_rel[0],mouse_rel[1],scroll_bar])
         
@@ -331,28 +283,6 @@ def get_input():
         update(dt)
 
     
-#    for i in [0,1,2]:
-#        cloth.particles[         0][        0].vel[i] += (cloth.particles[        0][        0].pos[i] - cloth.particles[        0][        0].last_pos[i])
-#        cloth.particles[         0][point_n-1].vel[i] += (cloth.particles[        0][point_n-1].pos[i] - cloth.particles[        0][point_n-1].last_pos[i])        
-#        cloth.particles[        0][        0].accel[i] = cloth.particles[        0][        0].vel[i]-cloth.particles[        0][        0].last_vel[i]
-#        cloth.particles[        0][point_n-1].accel[i] = cloth.particles[        0][point_n-1].vel[i]-cloth.particles[        0][point_n-1].last_vel[i]
-    
-#    if abs(cloth.particles[        0][        0].force[2])<0.4:   
-#        cloth.particles[        0][        0].pos[2] = cloth.particles[        0][        0].pos[2]+0.01*(-0.05-cloth.particles[        0][        0].force[2])
-#        cloth.particles[        0][        0].last_pos[2] = cloth.particles[        0][        0].pos[2]
-#    if abs(cloth.particles[        0][point_n-1].force[2])<0.4:    
-#        cloth.particles[        0][point_n-1].pos[2] = cloth.particles[        0][point_n-1].pos[2]+0.01*( 0.05-cloth.particles[        0][point_n-1].force[2])
-#        cloth.particles[        0][point_n-1].last_pos[2] = cloth.particles[        0][point_n-1].pos[2]
-        
-#    cloth.particles[         0][point_n-1].last_vel = cloth.particles[         0][point_n-1].vel
-#    cloth.particles[point_n-1][point_n-1].last_vel = cloth.particles[point_n-1][point_n-1].vel        
-#    cloth.particles[         0][point_n-1].vel = [0.0,0.0,0.0]
-#    cloth.particles[point_n-1][point_n-1].vel = [0.0,0.0,0.0]
-
-    
-    #print ("S: ",cloth.particles[         0][point_n-1].last_vel,cloth.particles[point_n-1][point_n-1].last_vel)
-#    print ("Force: ",cloth.particles[         0][        0].force,cloth.particles[        0][point_n-1].force)  
-    #print ("Acc: ",cloth.particles[         0][point_n-1].accel,cloth.particles[point_n-1][point_n-1].accel) 
     return True
 
 def update(dt):
@@ -473,13 +403,14 @@ def main():
     p_BTR0_bow = pp_R[:, -1]        
         
     K_com = 0.1
-    GraspForce = np.array([0,0,0,0.2,-0.2,0,0,0,0,0.2,0.2,0])
+    GraspForce = np.array([0,0,0,0.1,-0.1,0,0,0,0,0.1,0.1,0])
     ez = np.array([0,0,1])
 #    dt = 0.05
     dq_pre = np.zeros([17,1]) 
-    Lambda = 0      # Lambda: weighting on dual arm motion
-    Epsilon1 = 1    # Epsilon1: alpha close to 1
-    Epsilon2 = 0.5   # Epsilon2: q close to previous         
+    Epsilon1 = 1     # Epsilon1: alpha close to 1
+    Epsilon2 = 0     # Epsilon2: weighting on dual arm motion
+    Epsilon3 = 0.5   # Epsilon3: q close to previous      
+    Epsilon4 = 50    # Epsilon4: BOW facing the human head 
     R_K2B = np.array([[0.0,0.0,1.0],[1.0,0.0,0.0],[0.0,1.0,0.0]])
     R_K2B_inv = np.array([[0., 1., 0.],[0., 0., 1.],[1., 0., 0.]])
 
@@ -492,10 +423,13 @@ def main():
     Xk = np.vstack([Z, np.zeros([6,1])]).reshape([12,1])    
     Xk_prev = Xk
 
-    cloth_offset = [ 0.9213,-0.4592, 1.2194] # =p_OR0   
-          
+    
+    human_head0 = (human_L + human_R)*0.5-(np.array(cloth.particles[ 0][         0].pos)+np.array(cloth.particles[ 0][ point_n-1].pos))*0.5
+    human_head0 = np.dot(R_K2B,human_head0)
+    human_head0 = human_head0/np.linalg.norm(human_head0)
+    v_current = np.array([0,0,0]) 
+    
     while True:
-    #for i in range(1000):
         tic = timeit.default_timer()
         if not get_input(): break
 
@@ -524,7 +458,6 @@ def main():
         h_LR = p_BTR-p_BTL
         h_LR_norm = h_LR/np.linalg.norm(h_LR)
         h_LRv = np.cross(h_LR_norm,ez)
-#        print ('Force: ',np.dot(h_LR_norm,wrL),np.dot(h_LRv,wrL))
         if np.dot(h_LR_norm,wrL)>GraspForce[4] and np.dot(h_LRv,wrL)<GraspForce[3]:
             vL_force = -K_com*(np.dot(h_LR_norm,wrL)-GraspForce[4])*h_LR_norm-K_com*(np.dot(h_LRv,wrL)-GraspForce[3])*h_LRv
             VT[3:6] += vL_force.reshape([3,1])
@@ -549,8 +482,6 @@ def main():
         p_LR = (Xk[3:6,:]-Xk[0:3,:]).reshape([3,])
         p_LR = p_LR/np.linalg.norm(p_LR)
         vc = 1*(Vk[3:6,:]+Vk[0:3,:]).reshape([3,1])
-#        vc = np.dot(np.array([[0,1,0],[1,0,0],[0,0,1]]),vc)
-#                        print ('theta_hand: ',np.dot(p_LR_prev,p_LR),np.arccos(np.dot(p_LR_prev,p_LR)))
         wc = 200*(np.cross(p_LR_prev,p_LR)*np.arccos(np.clip(np.dot(p_LR_prev,p_LR),-1,1))).reshape([3,1])                        
         
         Vc = np.vstack([wc,vc])
@@ -560,24 +491,22 @@ def main():
         
         VT[0:6] += 10*np.dot(AL,Vc)
         VT[6:12] += 10*np.dot(AR,Vc)
-#        VT[0:6] = 10*np.dot(AL,Vc)
-#        VT[6:12] = 10*np.dot(AR,Vc)
         
         p_LR_prev = p_LR
-        # print ('VT[0:6]: ',Vc)
-#        print ('Vk: ',Vk)
-#        print ('human_L: ',human_L)
-#        print ('wc: ',wc)
+        
         if not any(np.isnan(VT)):
-#            if all(Vc) ==0:
-#                dq_sln = np.zeros([18,])
-#            else:
-            dq_sln = QP_bow(JT,VT,Lambda,Epsilon1,q,Epsilon2,dq_pre, Closest_Pt_L , Closest_Pt_env_L, Closest_Pt_R , Closest_Pt_env_R)    
-#            VT = np.zeros([12,1])
-#            VT[9] = 0.2
-#            VT[3] = 0.2
-#            dq_sln = np.dot(np.linalg.pinv(JT),VT).reshape([17,])
-#            print ('dq_sln: ',dq_sln)
+    
+            human_headc = (human_L + human_R)*0.5-(np.array(cloth.particles[ 0][         0].pos)+np.array(cloth.particles[ 0][ point_n-1].pos))*0.5
+            human_headc = np.dot(R_K2B,human_headc)
+            human_headc = human_headc/np.linalg.norm(human_headc)
+            
+            v_head = np.cross(human_headc,human_head0)
+            theta_head = np.arccos(np.dot(human_headc,human_head0))
+        
+            Ktheta_h = -np.sign(v_head.dot(ez))*theta_head*1000*(theta_head>10e-5)  
+            print theta_head, human_head0,  human_headc          
+            dq_sln = QP_bow_head(JT,VT,Epsilon1,Epsilon2,q,Epsilon3, Epsilon4, Ktheta_h, dq_pre, Closest_Pt_L , Closest_Pt_env_L, Closest_Pt_R , Closest_Pt_env_R)
+            human_head0 = human_headc
             dq_sln=dq_sln*(abs(dq_sln)>0.01)
             dq_pre = dq_sln[0:17].reshape([17,1])
             dqL = dq_sln[0:7]
@@ -597,12 +526,13 @@ def main():
             pp_R,RR = fwdkin_alljoints(np.hstack([qB,qR,0.05]), bow_joint_type_right, bow_H_right, bow_P_right, 11)
             p_BTR_bow = pp_R[:, -1] 
     
-            cloth.particles[         0][         0].pos = np.dot(R_K2B_inv,(p_BTR_bow-cloth_offset))/0.9186+np.array([0.,1.0,0.])#np.dot(R_K2B_inv,dV[9:12]*dt)/0.91 
-            cloth.particles[         0][ point_n-1].pos = np.dot(R_K2B_inv,(p_BTL_bow-cloth_offset))/0.9186+np.array([0.,1.0,0.])#np.dot(R_K2B_inv,dV[3:6]*dt)/0.91           
-#            cloth.particles[         0][ point_n-1].pos = np.dot(R_K2B_inv,(p_BTL_bow-p_BTR_bow)/0.9186)+np.array([0.,1.0,0.])
+            cloth.particles[         0][         0].pos = np.dot(R_K2B_inv,(p_BTR_bow-cloth_offset))/cloth_scale+np.array([0.,1.0,0.]) 
+            cloth.particles[         0][ point_n-1].pos = np.dot(R_K2B_inv,(p_BTL_bow-cloth_offset))/cloth_scale+np.array([0.,1.0,0.])         
+            cloth.particles[         0][         1].pos = np.dot(R_K2B_inv,(p_BTR_bow-cloth_offset))/cloth_scale+np.array([0.1,1.0,0.]) 
+            cloth.particles[         0][ point_n-2].pos = np.dot(R_K2B_inv,(p_BTL_bow-cloth_offset))/cloth_scale+np.array([-0.1,1.0,0.])
 
         pos = np.array(pos)          
-        sio.savemat('pos.mat', {'pos':pos,'qL':qL,'qR':qR,'qB':qB})
+        sio.savemat('pos.mat', {'pos':pos,'qL':qL,'qR':qR,'qB':qB,'v_current': v_current})
         draw()
         clock.tick(target_fps)
         # t_all.append(timeit.default_timer()-tic)
