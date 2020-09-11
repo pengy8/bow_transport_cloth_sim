@@ -10,8 +10,7 @@ BOWwCloth.m
 ```
 Run in Python 2.7 for main algorithms: 
 ```
-main_voice_control.py
-main_mouse_orientation_control.py
+main_mouse_layup_process.py
 ```
 
 
